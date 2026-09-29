@@ -1,0 +1,13 @@
+{
+  "season": 3,
+  "sheet": "https://docs.google.com/spreadsheets/d/e/2PACX-1vRWLzMxExK_CHV8x6uGcYFuDTKIaIfQIFMMrDz89AbrbBtgt4E22U8lmMyr-p3F-_cZcGPmm1qJSSYN/pub?single=true&output=csv&gid=",
+  "tabs": {
+    "teams": "0",
+    "schedule": "242746494",
+    "standings": "492816603",
+    "roster": "1346726150",
+    "attributes": null,
+    "tactics": null
+  },
+  "cache_dir": ".cache"
+}

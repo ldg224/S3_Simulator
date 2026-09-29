@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HCL Sim Debug Viewer</title>
+<style>
+  :root { --bg: #0f1115; --panel: #171a21; --text: #e5e7eb; --muted: #9ca3af; --pitch: #1f6f3a; --line: rgba(255,255,255,0.75); }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.4 system-ui, -apple-system, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); }
+  main { max-width: 1200px; margin: 0 auto; padding: 16px; display: grid; gap: 12px; }
+  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
+  h1 { font-size: 16px; margin: 0; }
+  .score { font-size: 20px; font-weight: 800; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; background: var(--panel); padding: 10px; border-radius: 10px; }
+  button, select, input[type=file] { font: inherit; color: var(--text); background: #232733; border: 1px solid #333a48; border-radius: 8px; padding: 6px 10px; }
+  input[type=range] { flex: 1; min-width: 160px; }
+  .wrap { display: grid; grid-template-columns: 1fr 300px; gap: 12px; }
+  canvas { width: 100%; height: auto; background: var(--pitch); border-radius: 10px; display: block; }
+  #log { background: var(--panel); border-radius: 10px; padding: 10px; height: 560px; overflow: auto; font-size: 12px; }
+  #log div { padding: 2px 0; color: var(--muted); }
+  #log div.now { color: var(--text); font-weight: 700; }
+  .clock { font-variant-numeric: tabular-nums; min-width: 70px; }
+  @media (max-width: 900px) { .wrap { grid-template-columns: 1fr; } #log { height: 240px; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>HCL match debug viewer</h1>
+    <div class="score" id="score">Load a match file</div>
+  </header>
+  <div class="controls">
+    <input type="file" id="file" accept=".json,.gz">
+    <button id="play">Play</button>
+    <select id="speed"><option value="1">1x</option><option value="4" selected>4x</option><option value="10">10x</option><option value="30">30x</option></select>
+    <span class="clock" id="clock">00:00</span>
+    <input type="range" id="seek" min="0" max="0" value="0">
+  </div>
+  <div class="wrap">
+    <canvas id="pitch" width="1050" height="680"></canvas>
+    <div id="log"></div>
+  </div>
+</main>
+<script>
+// Debug tool for checking simulator output; not the real match display.
+const cv = document.getElementById('pitch'), ctx = cv.getContext('2d');
+const S = 10; // canvas px per metre
+let M = null, frame = 0, playing = false, last = 0, acc = 0, evIdx = [];
+
+async function load(file) {
+  let text;
+  if (file.name.endsWith('.gz')) {
+    const ds = file.stream().pipeThrough(new DecompressionStream('gzip'));
+    text = await new Response(ds).text();
+  } else text = await file.text();
+  M = JSON.parse(text);
+  frame = 0;
+  document.getElementById('seek').max = M.frames.data.length - 1;
+  const h = M.teams.home, a = M.teams.away;
+  document.getElementById('score').textContent = `${h.name} ${M.result.home} - ${M.result.away} ${a.name}`;
+  const log = document.getElementById('log');
+  const names = Object.fromEntries(M.players.map(p => [p.id, p.name]));
+  const shown = M.events.filter(e => ['goal','shot','save','card','foul','corner','offside','penalty','period_start','period_end','woodwork'].includes(e.type));
+  log.innerHTML = shown.map(e => `<div data-t="${e.t}">${e.minute}' ${e.type}${e.player ? ' - ' + (names[e.player] || e.player) : ''}${e.outcome ? ' (' + e.outcome + ')' : ''}${e.type === 'goal' ? ' ' + e.score.join('-') : ''}</div>`).join('');
+  log.onclick = ev => { const t = +ev.target.dataset.t; if (!isNaN(t)) seekTime(t - 5); };
+  draw();
+}
+
+function seekTime(t) {
+  const d = M.frames.data; let lo = 0, hi = d.length - 1;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (d[mid][0] / 10 < t) lo = mid + 1; else hi = mid; }
+  frame = lo; draw();
+}
+
+function pitch() {
+  ctx.fillStyle = '#1f6f3a'; ctx.fillRect(0, 0, cv.width, cv.height);
+  for (let i = 0; i < 10; i++) if (i % 2) { ctx.fillStyle = '#227a40'; ctx.fillRect(i * 105, 0, 105, 680); }
+  ctx.strokeStyle = 'rgba(255,255,255,0.75)'; ctx.lineWidth = 2;
+  ctx.strokeRect(0, 0, 1050, 680);
+  ctx.beginPath(); ctx.moveTo(525, 0); ctx.lineTo(525, 680); ctx.stroke();
+  ctx.beginPath(); ctx.arc(525, 340, 91.5, 0, Math.PI * 2); ctx.stroke();
+  for (const x of [0, 1050]) {
+    const dir = x ? -1 : 1;
+    ctx.strokeRect(x ? 1050 - 165 : 0, 138.4, 165, 403.2);
+    ctx.strokeRect(x ? 1050 - 55 : 0, 248.4, 55, 183.2);
+    ctx.fillStyle = 'rgba(255,255,255,0.9)'; ctx.fillRect(x ? 1050 : -6, 303.4, 6, 73.2);
+  }
+}
+
+function draw() {
+  if (!M) return;
+  const row = M.frames.data[frame], sc = M.frames.scale;
+  pitch();
+  const cols = [M.teams.home.colour, M.teams.away.colour];
+  M.players.forEach((p, i) => {
+    const x = row[6 + 2 * i] / sc * S, y = row[7 + 2 * i] / sc * S;
+    const side = i < M.teams.home.lineup.length ? 0 : 1;
+    ctx.beginPath(); ctx.arc(x, y, 9, 0, Math.PI * 2);
+    ctx.fillStyle = cols[side]; ctx.fill();
+    ctx.lineWidth = row[4] === i ? 4 : 1.5; ctx.strokeStyle = row[4] === i ? '#ffffff' : 'rgba(0,0,0,0.6)'; ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.font = '10px system-ui'; ctx.textAlign = 'center';
+    ctx.fillText(p.slot, x, y - 13);
+  });
+  const bx = row[1] / sc * S, by = row[2] / sc * S, bz = row[3] / sc;
+  ctx.globalAlpha = row[5] ? 1 : 0.35;
+  ctx.beginPath(); ctx.arc(bx, by, 4 + bz * 1.5, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill();
+  ctx.strokeStyle = '#000'; ctx.lineWidth = 1; ctx.stroke(); ctx.globalAlpha = 1;
+  const t = row[0] / 10;
+  const per = M.periods.filter(p => p.start_t <= t).pop() || M.periods[0];
+  const el = t - per.start_t + (per.period === 2 ? 2700 : 0);
+  document.getElementById('clock').textContent = `${String(Math.floor(el / 60)).padStart(2, '0')}:${String(Math.floor(el % 60)).padStart(2, '0')}`;
+  document.getElementById('seek').value = frame;
+  document.querySelectorAll('#log div').forEach(d => d.classList.toggle('now', Math.abs(+d.dataset.t - t) < 3));
+}
+
+function loop(ts) {
+  if (playing && M) {
+    acc += (ts - last) / 1000 * +document.getElementById('speed').value * M.frames.fps;
+    while (acc >= 1 && frame < M.frames.data.length - 1) { frame++; acc--; }
+    draw();
+  }
+  last = ts; requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+document.getElementById('file').onchange = e => e.target.files[0] && load(e.target.files[0]);
+document.getElementById('play').onclick = e => { playing = !playing; e.target.textContent = playing ? 'Pause' : 'Play'; };
+document.getElementById('seek').oninput = e => { frame = +e.target.value; draw(); };
+// Allow ?t=<seconds> for screenshots, and auto-load ?file= when served over http.
+const qs = new URLSearchParams(location.search);
+if (qs.get('file')) fetch(qs.get('file')).then(r => r.blob()).then(b => load(new File([b], qs.get('file')))).then(() => { if (qs.get('t')) seekTime(+qs.get('t')); });
+</script>
+</body>
+</html>
