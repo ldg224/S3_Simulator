@@ -44,8 +44,8 @@ TUNING = {
     'loft_error': 0.11,           # landing error as a fraction of distance, 1 sd
 
     # Shooting execution error (degrees, 1 sd)
-    'shot_error_base': 4.0,
-    'shot_error_skill': 10.5,
+    'shot_error_base': 5.0,
+    'shot_error_skill': 12.0,
     'shot_error_pressure': 7.0,
     'header_error_extra': 4.0,
 
@@ -53,7 +53,7 @@ TUNING = {
     'decision_temperature': 0.006,   # softmax temperature for a 100-rated decision maker
     'decision_temperature_poor': 0.020,
     'risk_aversion': 1.0,
-    'shot_appetite': 0.75,
+    'shot_appetite': 0.68,
 
     # Duels
     'tackle_rate': 0.09,          # tackle attempts per second when in range
@@ -63,7 +63,7 @@ TUNING = {
 
     # Goalkeeping
     'gk_reaction': 0.22,          # seconds for a 100-rated keeper; up to +0.15 for poor ones
-    'gk_save_base': 3.0,
+    'gk_save_base': 3.7,
     'gk_dive_speed': 6.0,
 
     # Control

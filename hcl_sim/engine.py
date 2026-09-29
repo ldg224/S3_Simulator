@@ -498,8 +498,8 @@ class Match:
                 if rng.random() < p_block:
                     self._resolve_shot('blocked')
                     self.ev('block', q)
-                    # Blocked shots mostly carry on toward goal, deflected: a good share go behind.
-                    self._deflect(q, 0.25, 0.55, 35)
+                    # Blocked shots lose most of their pace and scatter off the defender's body.
+                    self._deflect(q, 0.15, 0.45, 60)
                 else:
                     q.touch_ready_at = self.t + 0.6
             return
@@ -613,14 +613,15 @@ class Match:
                 self.ev('save', gk, result='parried')
                 T = self.team_of(gk)
                 away = 1 if T.direction == 1 else -1
-                if rng.random() < 0.5:
+                if rng.random() < 0.62:
                     # Pushed wide / around the post / over the bar: usually ends up a corner.
                     side = 1 if b.y > 34 else -1
                     b.vx = -away * rng.uniform(3, 8)
                     b.vy = side * rng.uniform(6, 12)
                 else:
-                    b.vx = abs(b.vx) * rng.uniform(0.15, 0.4) * away
-                    b.vy = b.vy * rng.uniform(0.2, 0.6) + rng.uniform(-6, 6)
+                    # Parried back out: scattered sideways, rarely straight back to the shooter.
+                    b.vx = abs(b.vx) * rng.uniform(0.1, 0.3) * away
+                    b.vy = rng.choice((-1, 1)) * rng.uniform(5, 11)
                 b.vz = rng.uniform(0.0, 3.5)
                 b.last_touch = gk
                 b.flight = {'kind': 'deflection', 'kicker': gk, 'receiver': None, 'event': None, 't': self.t}
@@ -1051,6 +1052,19 @@ class Match:
 
         if in_poss and holder is not None and not p.is_gk:
             hax, hay = team.to_att(holder.x, holder.y)
+            # Attacking the final third: fill the box instead of leaving the striker alone.
+            # Wide forwards cut inside into the channels; the far-side central midfielder arrives
+            # late at the edge of the area.
+            if hax > 66 and p.run_until <= t:
+                y_base = tactics.FORMATIONS.get(team.formation, tactics.FORMATIONS['4-3-3'])[p.slot][1]
+                if p.line in ('FWD', 'AM') and p.slot not in ('ST', 'LST', 'RST', 'CAM'):
+                    side = -1 if y_base < 34 else 1
+                    ax = max(ax, min(line - 0.5, 97.0))
+                    ay = ay + ((34 + side * 8) - ay) * 0.7
+                elif p.slot in ('LCM', 'RCM', 'CAM', 'LM', 'RM', 'LDM', 'RDM'):
+                    far_side = (y_base - 34) * (hay - 34) < 0
+                    ax = max(ax, 85.0 if far_side else 79.0)
+                    ay = ay + (34 - ay) * (0.55 if far_side else 0.3)
             # Forward runs in behind.
             if p.run_until > t:
                 ax, ay = p.tx_att_run

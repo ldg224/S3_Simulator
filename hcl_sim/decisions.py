@@ -205,7 +205,14 @@ def _pass_option(c, r, loft_angle=0.0, subtype=None, z0=0.0, max_speed=None):
     if subtype not in ('throw', 'goal_kick', 'corner') and rx_kick > c.off_line + 0.1 and rx_kick > c.ax and rx_kick > PITCH_LENGTH / 2:
         ps *= 0.05 + 0.5 * (1 - p.a('vision'))
 
-    value = threat(tx, ty) + 0.012 * min(_nearest(tx, ty, c.opps), 8) / 8
+    # A tightly marked receiver (usually the striker between two centre-backs) is worth less
+    # than the pitch position alone suggests: he'll have little time to do anything with it.
+    value = threat(tx, ty) * (1.0 - 0.45 * min(press_target, 1.2)) + 0.012 * min(_nearest(tx, ty, c.opps), 8) / 8
+    if tx > 80 and not loft_angle:
+        # A pass into a shooting position (cut-back, lay-off, square ball) is worth the chance
+        # the receiver scores with it, which spreads shots across the team.
+        xg_there = expected_goals(tx, ty, pressure=min(press_target, 1.5), blockers=blockers_in_cone(tx, ty, c.opps))
+        value = max(value, 0.8 * xg_there * TUNING['shot_appetite'] * 1.15)
     directness = c.team.tactic('directness')
     if tx > c.ax + 10:
         value *= 1.0 + 0.25 * directness
@@ -239,7 +246,8 @@ def _shot_option(c, penalty=False, header=False):
     long_shots = c.p.a('long_shots')
     if d > 20 and xg < 0.03 and not penalty:
         return None     # speculative efforts from distance are rare
-    appetite = TUNING['shot_appetite'] * (0.4 + 0.6 * long_shots if d > 18 else 1.0)
+    # Players with a good long shot back themselves from distance when they have a sight of goal.
+    appetite = TUNING['shot_appetite'] * (0.7 + 0.7 * long_shots if d > 18 else 1.0)
     utility = xg * appetite * 1.15 - (1 - xg) * 0.004
     return {'kind': 'shoot', 'xg': xg, 'utility': utility, 'windup': 0.3 if not penalty else 1.0,
             'target': c.to_pitch(PITCH_LENGTH, 34), 'receiver': None, 'p': xg, 'subtype': 'penalty' if penalty else 'open'}
