@@ -58,11 +58,22 @@ def _slot_score(p, slot):
     return a['passing'] + a['vision'] + a['stamina'] * 0.5
 
 
-def assign_lineup(players, formation):
-    """Assign each player a formation slot. Returns list of (player, slot)."""
+def assign_lineup(players, formation, chosen=None):
+    """Assign each player a formation slot. Returns list of (player, slot).
+
+    `chosen` ({slot: player id}, optional) is the manager's pick: those players go in those
+    slots, and any slot left empty (unknown slot, missing or repeated player) is filled
+    automatically from the rest of the squad."""
     slots = FORMATIONS.get(formation) or FORMATIONS['4-3-3']
     remaining = list(players)
     assigned = []
+    by_id = {str(p.id): p for p in players}
+    for slot, pid in (chosen or {}).items():
+        p = by_id.get(str(pid))
+        if slot in slots and p in remaining and all(s != slot for _, s in assigned):
+            remaining.remove(p)
+            assigned.append((p, slot))
+    slots = {s: v for s, v in slots.items() if all(s != a for _, a in assigned)}
     # Fill slots in order of specificity: GK, then centre-backs, full-backs, CDM, strikers, rest.
     order = sorted(slots, key=lambda s: ('GK', 'CB', 'LCB', 'RCB', 'CDM', 'LDM', 'RDM', 'ST', 'LST', 'RST').index(s)
                    if s in ('GK', 'CB', 'LCB', 'RCB', 'CDM', 'LDM', 'RDM', 'ST', 'LST', 'RST') else 20)

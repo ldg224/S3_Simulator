@@ -26,11 +26,16 @@ def build_team(league, code):
         worst.position = 'GK'
         print(f'warning: {code} has no goalkeeper; {worst.name} goes in goal')
 
-    lineup = tactics.assign_lineup(players, formation)
+    # Optional manager choices: XI by slot, set-piece takers and captain (player ids).
+    chosen = tac.pop('lineup', None) or {}
+    takers = {kind: str(tac.pop(key)) for kind, key in (('penalty', 'penalties'), ('free_kick', 'freekicks'), ('corner', 'corners')) if tac.get(key)}
+    captain = str(tac.pop('captain', '') or '')
+    lineup = tactics.assign_lineup(players, formation, chosen if isinstance(chosen, dict) else None)
     starters = []
     for p, slot in lineup:
         p.slot = slot
         p.line = tactics.FORMATIONS[formation][slot][0]
         starters.append(p)
     tac_clean = {k: v / 100 if v > 1 else v for k, v in tac.items() if isinstance(v, (int, float))}
-    return Team(code=code, name=info['name'], colour=info['colour'], players=starters, formation=formation, tactics=tac_clean)
+    return Team(code=code, name=info['name'], colour=info['colour'], players=starters, formation=formation, tactics=tac_clean,
+                takers=takers, captain=captain if any(str(p.id) == captain for p in starters) else '')

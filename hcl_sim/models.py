@@ -78,6 +78,8 @@ class Team:
     players: list
     formation: str = '4-3-3'
     tactics: dict = field(default_factory=dict)
+    takers: dict = field(default_factory=dict)   # kind ('penalty', 'free_kick', 'corner') -> player id
+    captain: str = ''
     side: int = 0
     direction: int = 1       # +1 attacks toward x = 105, -1 toward x = 0
 

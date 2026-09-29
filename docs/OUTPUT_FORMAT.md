@@ -35,8 +35,15 @@ times a second.
 
 ```jsonc
 { "code": "TUR", "name": "FC Turtle", "colour": "#0cf6f3", "formation": "4-3-3", "tactics": {},
+  "captain": "0001", "takers": { "penalty": "0010", "free_kick": "0009", "corner": "0007" },
   "lineup": [ { "idx": 0, "id": "0014", "name": "...", "position": "GK", "slot": "GK" }, ... ] }
 ```
+
+Input: `league.tactics[code]` may hold `formation` (4-3-3, 4-4-2, 4-2-3-1, 3-5-2), the tactic
+values `tempo`, `pressing`, `width`, `line_height`, `directness` (0..1, default 0.5), and the
+manager's picks: `lineup` ({slot: player id}; empty or invalid slots are filled automatically),
+`captain`, `penalties`, `freekicks`, `corners` (player ids). `captain` is `null` and `takers` is
+`{}` when none were chosen.
 
 ### Player
 

@@ -78,6 +78,31 @@ class Ratings(unittest.TestCase):
         self.assertEqual(a['pace'], 95)
 
 
+class ManagerChoices(unittest.TestCase):
+    def test_chosen_lineup_formation_and_takers(self):
+        from hcl_sim.teams import build_team
+        league = synthetic_league()
+        # A 4-4-2 with a DEF in midfield; one slot names a player from the other team and gets auto-filled.
+        league['tactics']['AAA'] = {'formation': '4-4-2', 'tempo': 0.8,
+                                    'lineup': {'GK': '0000', 'LB': '0004', 'LCB': '0001', 'LM': '0002', 'LST': '0015', 'NOPE': '0003'},
+                                    'penalties': '0010', 'captain': '0001', 'corners': '9999'}
+        team = build_team(league, 'AAA')
+        slots = {p.slot: p.id for p in team.players}
+        self.assertEqual(team.formation, '4-4-2')
+        self.assertEqual(len(team.players), 11)
+        self.assertEqual((slots['LB'], slots['LCB'], slots['LM']), ('0004', '0001', '0002'))
+        self.assertNotEqual(slots['LST'], '0015')
+        self.assertEqual(team.tactic('tempo'), 0.8)
+        self.assertEqual(team.takers['penalty'], '0010')
+        self.assertEqual(team.captain, '0001')
+        self.assertNotIn('lineup', team.tactics)
+
+    def test_defaults_unchanged_without_choices(self):
+        from hcl_sim.teams import build_team
+        team = build_team(synthetic_league(), 'AAA')
+        self.assertEqual((team.formation, team.takers, team.captain), ('4-3-3', {}, ''))
+
+
 class Validator(unittest.TestCase):
     def _match(self):
         league = synthetic_league()

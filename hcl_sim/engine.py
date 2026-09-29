@@ -885,6 +885,10 @@ class Match:
             return next((p for p in act if p.is_gk), act[0])
         outfield = [p for p in act if not p.is_gk] or act
         near = sorted(outfield, key=lambda p: dist(p.x, p.y, *spot))
+        # The manager's chosen taker, if on the pitch (free kicks only within shooting/crossing range).
+        pick = next((p for p in outfield if str(p.id) == team.takers.get(kind)), None)
+        if pick and (kind != 'free_kick' or team.to_att(*spot)[0] >= 40):
+            return pick
         if kind == 'throw_in':
             return near[0]
         if kind == 'corner':

@@ -140,7 +140,7 @@ def _team_stats(m, pstats):
 def _team_block(team):
     return {
         'code': team.code, 'name': team.name, 'colour': team.colour, 'formation': team.formation,
-        'tactics': team.tactics,
+        'tactics': team.tactics, 'captain': team.captain or None, 'takers': team.takers,
         'lineup': [{'idx': p.idx, 'id': p.id, 'name': p.name, 'position': p.position, 'slot': p.slot} for p in team.players],
     }
 
