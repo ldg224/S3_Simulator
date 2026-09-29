@@ -43,8 +43,25 @@ def load_config(path=None):
         return json.load(f)
 
 
-def fetch_tab(cfg, name, offline=False):
-    """Returns the tab as a list of dicts keyed by normalised header, or None if not configured."""
+def parse_csv_text(text):
+    """CSV text -> list of dicts keyed by normalised header (blank rows skipped)."""
+    rows = list(csv.reader(io.StringIO(text)))
+    if not rows:
+        return []
+    keys = [header_key(h) for h in rows[0]]
+    out = []
+    for r in rows[1:]:
+        if not any(v.strip() for v in r):
+            continue
+        out.append({k: (r[i].strip() if i < len(r) else '') for i, k in enumerate(keys) if k})
+    return out
+
+
+def fetch_tab(cfg, name, offline=False, texts=None):
+    """Returns the tab as a list of dicts keyed by normalised header, or None if not configured.
+    `texts` ({tab name: csv text}) supplies the data directly, e.g. when running in a browser."""
+    if texts is not None:
+        return parse_csv_text(texts[name]) if texts.get(name) else None
     gid = cfg['tabs'].get(name)
     if gid is None:
         return None
@@ -72,16 +89,7 @@ def fetch_tab(cfg, name, offline=False):
             with open(cache, encoding='utf-8') as f:
                 text = f.read()
 
-    rows = list(csv.reader(io.StringIO(text)))
-    if not rows:
-        return []
-    keys = [header_key(h) for h in rows[0]]
-    out = []
-    for r in rows[1:]:
-        if not any(v.strip() for v in r):
-            continue
-        out.append({k: (r[i].strip() if i < len(r) else '') for i, k in enumerate(keys) if k})
-    return out
+    return parse_csv_text(text)
 
 
 def pick(row, *keys):
@@ -91,11 +99,11 @@ def pick(row, *keys):
     return ''
 
 
-def load_league(cfg=None, offline=False):
+def load_league(cfg=None, offline=False, texts=None):
     """Returns {'teams': {code: {...}}, 'players': {id: {...}}, 'schedule': [...], 'attributes': {...}, 'tactics': {...}}"""
     cfg = cfg or load_config()
     teams = {}
-    for r in fetch_tab(cfg, 'teams', offline) or []:
+    for r in fetch_tab(cfg, 'teams', offline, texts) or []:
         code = pick(r, 'team_code', 'code').upper()
         if code:
             teams[code] = {
@@ -106,7 +114,7 @@ def load_league(cfg=None, offline=False):
             }
 
     players = {}
-    for r in fetch_tab(cfg, 'roster', offline) or []:
+    for r in fetch_tab(cfg, 'roster', offline, texts) or []:
         pid = pick(r, 'player_id', 'id')
         if not pid:
             continue
@@ -121,14 +129,14 @@ def load_league(cfg=None, offline=False):
 
     # Optional tab of detailed attributes: PLAYER ID plus any attribute columns (1-100).
     attributes = {}
-    for r in fetch_tab(cfg, 'attributes', offline) or []:
+    for r in fetch_tab(cfg, 'attributes', offline, texts) or []:
         pid = pick(r, 'player_id', 'id')
         if pid:
             attributes[pid] = {k: to_number(v) for k, v in r.items() if k not in ('player_id', 'id', 'player_name', 'name') and to_number(v) is not None}
 
     # Optional tab of team tactics: TEAM CODE, FORMATION, PRESSING, LINE HEIGHT, TEMPO, WIDTH, DIRECTNESS.
     tactics = {}
-    for r in fetch_tab(cfg, 'tactics', offline) or []:
+    for r in fetch_tab(cfg, 'tactics', offline, texts) or []:
         code = pick(r, 'team_code', 'code').upper()
         if code:
             t = {k: to_number(v) for k, v in r.items() if to_number(v) is not None}
@@ -137,11 +145,25 @@ def load_league(cfg=None, offline=False):
             tactics[code] = t
 
     schedule = []
-    for r in fetch_tab(cfg, 'schedule', offline) or []:
+    for r in fetch_tab(cfg, 'schedule', offline, texts) or []:
         if r.get('home') and r.get('away'):
             schedule.append(r)
 
     return {'teams': teams, 'players': players, 'attributes': attributes, 'tactics': tactics, 'schedule': schedule}
+
+
+def league_info(league):
+    """Teams (with squad sizes) and fixtures by week, for the simulator page."""
+    teams = []
+    for code, t in league['teams'].items():
+        n = sum(1 for p in league['players'].values() if p['team'] == code)
+        teams.append(dict(t, players=n))
+    weeks = {}
+    for r in league['schedule']:
+        w = (r.get('week') or '').strip()
+        if w:
+            weeks.setdefault(w, []).append({'home': r['home'], 'away': r['away'], 'date': r.get('date'), 'time': r.get('time')})
+    return {'teams': teams, 'weeks': weeks, 'players': len(league['players'])}
 
 
 def resolve_team(league, value):

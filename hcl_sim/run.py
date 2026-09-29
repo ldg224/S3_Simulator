@@ -47,6 +47,33 @@ def read_match(path):
         return json.load(f)
 
 
+def summarise_match(data, report, fname=None, size=None):
+    """Small description of a match for the simulator page's library."""
+    from datetime import datetime
+    names = {p['id']: p['name'] for p in data['players']}
+    th, ta = data['teams']['home'], data['teams']['away']
+    return {
+        'file': fname,
+        'created': datetime.now().isoformat(timespec='seconds'),
+        'seed': data['engine']['seed'],
+        'week': data['match'].get('week'),
+        'date': data['match'].get('date'),
+        'time': data['match'].get('time'),
+        'home': {'code': th['code'], 'name': th['name'], 'colour': th['colour']},
+        'away': {'code': ta['code'], 'name': ta['name'], 'colour': ta['colour']},
+        'result': {
+            'home': data['result']['home'], 'away': data['result']['away'],
+            'goals': [dict(g, scorer_name=names.get(g['scorer'], g['scorer']),
+                           assist_name=names.get(g['assist']) if g['assist'] else None)
+                      for g in data['result']['goals']],
+        },
+        'stats': data['stats']['teams'],
+        'valid': report['ok'],
+        'problems': [f'{k}: {d}' for k, d in report['problems'][:5]],
+        'size': size,
+    }
+
+
 def sheet_goal_columns(data, max_goals=None):
     """Goals in the Schedule & Results format: [(minute, player id), ...] in time order."""
     out = []

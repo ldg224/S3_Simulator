@@ -23,39 +23,14 @@ from multiprocessing import Manager
 from urllib.parse import parse_qs, urlparse
 
 from . import sheet
-from .run import match_seed, results_rows, simulate, write_match
+from .run import match_seed, results_rows, simulate, summarise_match, write_match
 from .validate import validate
 
 MATCH_DIR = os.path.join(sheet.ROOT, 'matches')
-WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'web')
+PAGE = os.path.join(sheet.ROOT, 'index.html')   # the same page GitHub Pages serves
 
 
 # ---------- work done in background processes ----------
-
-def _summary(data, rep, fname, size):
-    names = {p['id']: p['name'] for p in data['players']}
-    th, ta = data['teams']['home'], data['teams']['away']
-    return {
-        'file': fname,
-        'created': datetime.now().isoformat(timespec='seconds'),
-        'seed': data['engine']['seed'],
-        'week': data['match'].get('week'),
-        'date': data['match'].get('date'),
-        'time': data['match'].get('time'),
-        'home': {'code': th['code'], 'name': th['name'], 'colour': th['colour']},
-        'away': {'code': ta['code'], 'name': ta['name'], 'colour': ta['colour']},
-        'result': {
-            'home': data['result']['home'], 'away': data['result']['away'],
-            'goals': [dict(g, scorer_name=names.get(g['scorer'], g['scorer']),
-                           assist_name=names.get(g['assist']) if g['assist'] else None)
-                      for g in data['result']['goals']],
-        },
-        'stats': data['stats']['teams'],
-        'valid': rep['ok'],
-        'problems': [f'{k}: {d}' for k, d in rep['problems'][:5]],
-        'size': size,
-    }
-
 
 def _run_match(league, home, away, seed, info, fname, progress, key):
     try:
@@ -65,7 +40,7 @@ def _run_match(league, home, away, seed, info, fname, progress, key):
         rep = validate(data)
         path = os.path.join(MATCH_DIR, fname)
         size = write_match(data, path)
-        summ = _summary(data, rep, fname, size)
+        summ = summarise_match(data, rep, fname, size)
         with open(path[:-len('.json.gz')] + '.summary.json', 'w', encoding='utf-8') as f:
             json.dump(summ, f)
         progress[key] = 1.0
@@ -104,18 +79,9 @@ class App:
         self.loaded_at = datetime.now().isoformat(timespec='seconds')
 
     def league_info(self):
-        L = self.league or {'teams': {}, 'players': {}, 'schedule': []}
-        teams = []
-        for code, t in L['teams'].items():
-            n = sum(1 for p in L['players'].values() if p['team'] == code)
-            teams.append(dict(t, players=n))
-        weeks = {}
-        for r in L['schedule']:
-            w = (r.get('week') or '').strip()
-            if w:
-                weeks.setdefault(w, []).append({'home': r['home'], 'away': r['away'], 'date': r.get('date'), 'time': r.get('time')})
-        return {'teams': teams, 'weeks': weeks, 'loaded_at': self.loaded_at, 'error': self.load_error,
-                'players': len(L['players'])}
+        info = sheet.league_info(self.league or {'teams': {}, 'players': {}, 'schedule': []})
+        info.update(loaded_at=self.loaded_at, error=self.load_error, mode='server')
+        return info
 
     def _new_job(self, kind, tasks, extra=None):
         job_id = uuid.uuid4().hex[:10]
@@ -235,7 +201,7 @@ def make_handler(app):
             q = parse_qs(url.query)
             p = url.path
             if p in ('/', '/index.html'):
-                with open(os.path.join(WEB_DIR, 'index.html'), 'rb') as f:
+                with open(PAGE, 'rb') as f:
                     return self._send(200, f.read(), 'text/html; charset=utf-8')
             if p == '/api/league':
                 return self._send(200, app.league_info())

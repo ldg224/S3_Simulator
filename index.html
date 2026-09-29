@@ -59,6 +59,13 @@
   .empty { color: var(--muted); padding: 10px 0; }
   .error { color: var(--bad); font-size: 13px; margin-top: 10px; }
   .csvs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .csvs:empty { display: none; }
+  .lib-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .lib-head h2 { margin: 0; }
+  .file-btn { margin: 0; color: var(--text); font-size: 12px; }
+  #lib-hint { margin: 6px 0 12px; }
+  #lib-hint:empty { display: none; }
+  .mode { text-align: center; }
 
   /* Replay */
   #replay { position: fixed; inset: 0; background: var(--bg); display: none; z-index: 10; overflow: auto; }
@@ -118,8 +125,8 @@
         <label for="seed">Seed (optional)</label>
         <input type="number" id="seed" placeholder="Random" min="1">
       </div>
-      <button class="btn primary" id="go-match">Simulate match</button>
-      <p class="hint">A match takes about 30 seconds. The same teams and seed always produce the same match.</p>
+      <button class="btn primary" id="go-match" disabled>Simulate match</button>
+      <p class="hint" id="match-hint">The same teams and seed always produce the same match.</p>
       <p class="error" id="match-error"></p>
     </section>
 
@@ -130,7 +137,7 @@
         <select id="week"></select>
       </div>
       <ul class="fixtures" id="week-fixtures"></ul>
-      <button class="btn primary" id="go-week">Simulate week</button>
+      <button class="btn primary" id="go-week" disabled>Simulate week</button>
       <p class="hint">Runs every fixture in parallel and creates a results file in the Schedule &amp; Results format, ready to paste into the sheet.</p>
       <p class="error" id="week-error"></p>
     </section>
@@ -142,10 +149,15 @@
   </section>
 
   <section class="card">
-    <h2>Match library</h2>
+    <div class="lib-head">
+      <h2>Match library</h2>
+      <label class="btn small file-btn">Open a match file<input type="file" id="open-file" accept=".json,.gz" hidden></label>
+    </div>
+    <p class="hint" id="lib-hint"></p>
     <div class="csvs" id="csvs"></div>
     <div class="lib" id="library"><p class="empty">No matches yet.</p></div>
   </section>
+  <p class="hint mode" id="mode-note"></p>
 </div>
 
 <div id="replay" role="dialog" aria-modal="true" aria-label="Match replay">
@@ -158,8 +170,8 @@
         <span class="clock" id="rp-clock">00:00</span>
       </div>
       <div class="actions">
-        <a class="btn small" id="rp-dl-json">Download JSON</a>
-        <a class="btn small" id="rp-dl-gz">Download .json.gz</a>
+        <button class="btn small" id="rp-dl-json">Download JSON</button>
+        <button class="btn small" id="rp-dl-gz">Download .json.gz</button>
         <button class="btn small" id="rp-close">Close</button>
       </div>
     </div>
@@ -186,8 +198,6 @@
 <script>
 const $ = s => document.querySelector(s);
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let league = null;
-const activeJobs = new Set();
 
 async function api(path, body) {
   const res = await fetch(path, body ? { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) } : {});
@@ -196,9 +206,244 @@ async function api(path, body) {
   return data;
 }
 
+function saveBlob(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+const gzip = blob => new Response(blob.stream().pipeThrough(new CompressionStream('gzip'))).blob();
+const gunzipText = blob => new Response(blob.stream().pipeThrough(new DecompressionStream('gzip'))).text();
+
+/* ---------- Backend 1: the local Python server (python -m hcl_sim app) ---------- */
+const ServerBackend = {
+  mode: 'server',
+  async init() { return api('/api/league'); },
+  async refresh() { return api('/api/reload', {}); },
+  async _run(path, body, onProgress) {
+    const { job } = await api(path, body);
+    while (true) {
+      const st = await api('/api/jobs/' + job);
+      st.tasks.forEach((t, i) => onProgress(i, t.progress, t.label));
+      if (st.finished) {
+        const err = st.tasks.find(t => t.error);
+        if (err && !st.tasks.some(t => t.result)) throw new Error(err.error);
+        return { results: st.tasks.map(t => t.result).filter(Boolean), csv: st.csv };
+      }
+      await new Promise(r => setTimeout(r, 800));
+    }
+  },
+  async simulateMatch(home, away, seed, onProgress) {
+    return (await this._run('/api/simulate', { home, away, seed }, onProgress)).results[0];
+  },
+  async simulateWeek(week, onProgress) { return this._run('/api/week', { week }, onProgress); },
+  async library() {
+    const d = await api('/api/matches');
+    return { matches: d.matches, csv: d.csv.map(name => ({ name })) };
+  },
+  async loadMatch(s) { return (await fetch(`/files/${encodeURIComponent(s.file)}?format=json`)).json(); },
+  async download(s, fmt) { location.href = `/files/${encodeURIComponent(s.file)}${fmt === 'json' ? '?format=json&download=1' : ''}`; },
+  async downloadCsv(c) { location.href = `/files/${encodeURIComponent(c.name)}`; },
+  async remove(s) { await api('/api/delete', { file: s.file }); },
+};
+
+/* ---------- Backend 2: in the browser (GitHub Pages) with Pyodide workers ---------- */
+const DB = {
+  _db: null,
+  open() {
+    if (this._db) return this._db;
+    this._db = new Promise((resolve, reject) => {
+      const req = indexedDB.open('hcl-sim', 1);
+      req.onupgradeneeded = () => {
+        req.result.createObjectStore('matches', { keyPath: 'file' });
+        req.result.createObjectStore('files', { keyPath: 'name' });
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    return this._db;
+  },
+  async _tx(store, mode, fn) {
+    const db = await this.open();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(store, mode), req = fn(tx.objectStore(store));
+      tx.oncomplete = () => resolve(req && req.result);
+      tx.onerror = () => reject(tx.error);
+    });
+  },
+  put(store, v) { return this._tx(store, 'readwrite', s => s.put(v)); },
+  all(store) { return this._tx(store, 'readonly', s => s.getAll()); },
+  get(store, k) { return this._tx(store, 'readonly', s => s.get(k)); },
+  del(store, k) { return this._tx(store, 'readwrite', s => s.delete(k)); },
+};
+
+const BrowserBackend = {
+  mode: 'browser',
+  workers: [],
+  texts: null,
+  maxWorkers: Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1)),
+  memory: { matches: [], files: [] },   // used if the browser blocks storage
+
+  async _fetchSheet() {
+    const cfg = await (await fetch('league.json', { cache: 'no-cache' })).json();
+    const texts = {};
+    await Promise.all(Object.entries(cfg.tabs).map(async ([name, gid]) => {
+      if (gid == null) return;
+      const url = String(gid).toLowerCase().endsWith('.csv') ? gid : cfg.sheet + gid;
+      const res = await fetch(url, { cache: 'no-store' });
+      if (!res.ok) throw new Error(`Couldn't load the ${name} tab`);
+      texts[name] = await res.text();
+    }));
+    try { localStorage.setItem('hcl-sim-sheet', JSON.stringify(texts)); } catch { /* storage unavailable */ }
+    return texts;
+  },
+
+  _worker() {
+    const w = { w: new Worker('sim-worker.js'), busy: false, handlers: {} };
+    w.w.onmessage = e => {
+      const m = e.data;
+      if (m.type === 'ready') return;
+      const h = w.handlers[m.job || m.id];
+      if (h) h(m);
+    };
+    w.ready = this._send(w, { type: 'league', id: 'league', texts: JSON.stringify(this.texts) });
+    this.workers.push(w);
+    return w;
+  },
+
+  _send(w, msg) {
+    return new Promise((resolve, reject) => {
+      const key = msg.job || msg.id;
+      w.handlers[key] = m => {
+        if (m.type === 'progress') return msg.onProgress && msg.onProgress(m.p);
+        delete w.handlers[key];
+        if (m.type === 'error') reject(new Error(m.message)); else resolve(m);
+      };
+      const { onProgress, ...plain } = msg;
+      w.w.postMessage(plain);
+    });
+  },
+
+  async _idleWorker() {
+    while (true) {
+      const idle = this.workers.find(w => !w.busy);
+      if (idle) { idle.busy = true; await idle.ready; return idle; }
+      if (this.workers.length < this.maxWorkers) { const w = this._worker(); w.busy = true; await w.ready; return w; }
+      await new Promise(r => setTimeout(r, 200));
+    }
+  },
+
+  async init() {
+    let error = null;
+    try { this.texts = await this._fetchSheet(); }
+    catch (err) {
+      try { this.texts = JSON.parse(localStorage.getItem('hcl-sim-sheet')); } catch { this.texts = null; }
+      if (!this.texts) throw err;
+      error = 'Using the last saved copy of the sheet';
+    }
+    const w = this.workers[0] || this._worker();
+    const m = await w.ready;
+    return Object.assign(JSON.parse(m.info), { error, loaded_at: new Date().toISOString().slice(0, 19), mode: 'browser' });
+  },
+
+  async refresh() {
+    this.texts = await this._fetchSheet();
+    let info;
+    for (const w of this.workers) {
+      w.ready = this._send(w, { type: 'league', id: 'league', texts: JSON.stringify(this.texts) });
+      info = (await w.ready).info;
+    }
+    return Object.assign(JSON.parse(info), { error: null, loaded_at: new Date().toISOString().slice(0, 19), mode: 'browser' });
+  },
+
+  async _runOne(task, onProgress) {
+    const w = await this._idleWorker();
+    try {
+      const job = Math.random().toString(36).slice(2);
+      const m = await this._send(w, { type: 'simulate', job, ...task, onProgress });
+      const { summary, data } = JSON.parse(m.payload);
+      const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+      summary.file = task.info.week
+        ? `week${task.info.week}_${summary.home.code}_v_${summary.away.code}.json`
+        : `${stamp}_${summary.home.code}_v_${summary.away.code}_seed${summary.seed}.json`;
+      const gz = await gzip(new Blob([JSON.stringify(data)], { type: 'application/json' }));
+      summary.size = gz.size;
+      await this._store('matches', { file: summary.file, summary, gz });
+      return summary;
+    } finally { w.busy = false; }
+  },
+
+  async _store(store, rec) {
+    try { await DB.put(store, rec); }
+    catch { const list = this.memory[store]; const i = list.findIndex(x => (x.file || x.name) === (rec.file || rec.name)); if (i >= 0) list[i] = rec; else list.push(rec); }
+  },
+
+  async simulateMatch(home, away, seed, onProgress) {
+    return this._runOne({ home, away, seed: seed === '' ? null : Number(seed), info: {} }, p => onProgress(0, p, `${home} v ${away}`));
+  },
+
+  async simulateWeek(week, onProgress, fixtures) {
+    const results = await Promise.all(fixtures.map((fx, i) =>
+      this._runOne({ home: fx.home, away: fx.away, seed: null, info: { week, date: fx.date, time: fx.time } },
+                   p => onProgress(i, p, `${fx.home} v ${fx.away}`))));
+    const name = `week${week}_results.csv`;
+    await this._store('files', { name, text: resultsCsv(fixtures, results, week) });
+    return { results, csv: name };
+  },
+
+  async library() {
+    let matches, files;
+    try { matches = await DB.all('matches'); files = await DB.all('files'); }
+    catch { matches = this.memory.matches; files = this.memory.files; }
+    return {
+      matches: matches.map(r => r.summary).sort((a, b) => (b.created || '').localeCompare(a.created || '')),
+      csv: files.map(f => ({ name: f.name })).sort((a, b) => b.name.localeCompare(a.name)),
+    };
+  },
+
+  async _record(file) {
+    try { return await DB.get('matches', file); } catch { return this.memory.matches.find(r => r.file === file); }
+  },
+  async loadMatch(s) { return JSON.parse(await gunzipText((await this._record(s.file)).gz)); },
+  async download(s, fmt) {
+    const r = await this._record(s.file);
+    if (fmt === 'json') saveBlob(new Blob([await gunzipText(r.gz)], { type: 'application/json' }), s.file);
+    else saveBlob(r.gz, s.file + '.gz');
+  },
+  async downloadCsv(c) {
+    let f; try { f = await DB.get('files', c.name); } catch { f = this.memory.files.find(x => x.name === c.name); }
+    saveBlob(new Blob([f.text], { type: 'text/csv' }), c.name);
+  },
+  async remove(s) {
+    try { await DB.del('matches', s.file); } catch { this.memory.matches = this.memory.matches.filter(r => r.file !== s.file); }
+  },
+};
+
+// Same columns as the sheet's Schedule & Results tab (mirrors run.results_rows in Python).
+function resultsCsv(fixtures, results, week) {
+  const n = Math.max(6, ...results.map(r => r.result.goals.length));
+  const header = ['WEEK', 'DATE', 'TIME', 'STATUS', 'HOME', 'HOME SCORE', 'AWAY', 'AWAY SCORE', 'YOUTUBE LINK'];
+  for (let i = 1; i <= n; i++) header.push(`GOAL ${i} MIN`, `GOAL ${i} ID`);
+  const rows = [header];
+  fixtures.forEach((fx, i) => {
+    const r = results[i];
+    const row = [week, fx.date || '', fx.time || '', 'FINALISED', fx.home, r.result.home, fx.away, r.result.away, ''];
+    r.result.goals.forEach(g => row.push(g.minute, g.scorer + (g.own_goal ? ' (OG)' : '')));
+    while (row.length < header.length) row.push('');
+    rows.push(row);
+  });
+  const cell = v => /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
+  return rows.map(r => r.map(cell).join(',')).join('\r\n') + '\r\n';
+}
+
+/* ---------- UI ---------- */
+let backend = null, league = null, library = [], csvFiles = [];
+
 function renderLeague() {
   const L = league;
-  $('#sheet-status').textContent = L.error ? L.error : `${L.teams.length} teams · ${L.players} players · sheet loaded ${L.loaded_at.slice(11, 16)}`;
+  const where = backend.mode === 'server' ? 'running on this computer' : 'running in your browser';
+  $('#sheet-status').textContent = L.error ? L.error : `${L.teams.length} teams · ${L.players} players · ${where}`;
   $('#sheet-dot').classList.toggle('warn', !!L.error);
   const opts = L.teams.map(t => `<option value="${esc(t.code)}">${esc(t.name)} (${esc(t.code)})${t.players < 11 ? ` · ${t.players} players` : ''}</option>`).join('');
   $('#home').innerHTML = opts; $('#away').innerHTML = opts;
@@ -206,6 +451,15 @@ function renderLeague() {
   const weeks = Object.keys(L.weeks).sort((a, b) => a - b);
   $('#week').innerHTML = weeks.map(w => `<option value="${esc(w)}">Week ${esc(w)}</option>`).join('') || '<option value="">No fixtures on the Schedule tab</option>';
   renderFixtures();
+  $('#go-match').disabled = false;
+  $('#go-week').disabled = !weeks.length;
+  $('#match-hint').textContent = backend.mode === 'server'
+    ? 'A match takes about 30 seconds. The same teams and seed always produce the same match.'
+    : 'A match takes about 1-2 minutes in the browser. The same teams and seed always produce the same match.';
+  $('#lib-hint').textContent = backend.mode === 'browser' ? 'Matches you simulate here are saved in this browser only. Download them to keep or share them.' : '';
+  $('#mode-note').textContent = backend.mode === 'browser'
+    ? 'The match engine runs entirely in your browser (Python via Pyodide). For faster simulation, run it locally: python -m hcl_sim app'
+    : 'Running on this computer. Match files are saved in the matches/ folder.';
 }
 
 function renderFixtures() {
@@ -213,57 +467,70 @@ function renderFixtures() {
   $('#week-fixtures').innerHTML = fx.map(f => `<li><span>${esc(f.home)} v ${esc(f.away)}</span><span class="meta">${esc(f.date || '')} ${esc(f.time || '')}</span></li>`).join('');
 }
 
-async function loadLeague() { league = await api('/api/league'); renderLeague(); }
-
-$('#reload').onclick = async () => { $('#sheet-status').textContent = 'Refreshing…'; league = await api('/api/reload', {}); renderLeague(); };
 $('#week').onchange = renderFixtures;
+$('#reload').onclick = async () => {
+  $('#sheet-status').textContent = 'Refreshing…';
+  try { league = await backend.refresh(); renderLeague(); }
+  catch (e) { $('#sheet-status').textContent = 'Refresh failed: ' + e.message; $('#sheet-dot').classList.add('warn'); }
+};
+
+// Progress display for running jobs
+const jobs = new Map();
+let jobSeq = 0;
+function jobStart(title, labels) {
+  const id = ++jobSeq;
+  jobs.set(id, { title, tasks: labels.map(l => ({ label: l, p: 0, result: null, error: null })) });
+  renderJobs();
+  return id;
+}
+function renderJobs() {
+  $('#jobs-card').hidden = !jobs.size;
+  $('#jobs').innerHTML = [...jobs.values()].map(j => `<div class="job"><strong>${esc(j.title)}</strong>${j.tasks.map(t => {
+    const pct = Math.round(Math.max(0, t.p) * 100);
+    const right = t.error ? '<span class="badge bad">error</span>' : t.result ? `<span class="score">${t.result.result.home}-${t.result.result.away}</span>` : pct + '%';
+    return `<div class="job-row"><span>${esc(t.label)}</span><div class="bar"><span style="width:${t.error ? 100 : pct}%"></span></div><span>${right}</span></div>${t.error ? `<div class="error">${esc(t.error)}</div>` : ''}`;
+  }).join('')}</div>`).join('');
+}
+function jobProgress(id) {
+  return (i, p, label) => { const t = jobs.get(id)?.tasks[i]; if (t) { t.p = p; if (label) t.label = label; renderJobs(); } };
+}
 
 $('#go-match').onclick = async () => {
   $('#match-error').textContent = '';
+  const home = $('#home').value, away = $('#away').value;
+  if (home === away) { $('#match-error').textContent = 'Pick two different teams.'; return; }
+  const id = jobStart('Match', [`${home} v ${away}`]);
   try {
-    const { job } = await api('/api/simulate', { home: $('#home').value, away: $('#away').value, seed: $('#seed').value });
-    activeJobs.add(job); pollJobs();
-  } catch (e) { $('#match-error').textContent = e.message; }
+    const s = await backend.simulateMatch(home, away, $('#seed').value, jobProgress(id));
+    jobs.delete(id); renderJobs();
+    await loadLibrary();
+    openReplay(s);
+  } catch (e) {
+    jobs.get(id).tasks[0].error = e.message; renderJobs();
+    setTimeout(() => { jobs.delete(id); renderJobs(); }, 8000);
+  }
 };
+
 $('#go-week').onclick = async () => {
   $('#week-error').textContent = '';
+  const week = $('#week').value, fixtures = league.weeks[week] || [];
+  const id = jobStart('Week ' + week, fixtures.map(f => `${f.home} v ${f.away}`));
   try {
-    const { job } = await api('/api/week', { week: $('#week').value });
-    activeJobs.add(job); pollJobs();
-  } catch (e) { $('#week-error').textContent = e.message; }
+    const out = await backend.simulateWeek(week, jobProgress(id), fixtures);
+    out.results.forEach((r, i) => { const t = jobs.get(id).tasks[i]; if (t) { t.result = r; t.p = 1; } });
+    renderJobs();
+    await loadLibrary();
+    setTimeout(() => { jobs.delete(id); renderJobs(); }, 4000);
+  } catch (e) {
+    $('#week-error').textContent = e.message;
+    jobs.delete(id); renderJobs();
+  }
 };
 
-let polling = false;
-async function pollJobs() {
-  if (polling) return; polling = true;
-  while (activeJobs.size) {
-    const html = [];
-    for (const id of [...activeJobs]) {
-      const st = await api('/api/jobs/' + id);
-      html.push(`<div class="job"><strong>${st.kind === 'week' ? 'Week ' + esc(st.week) : 'Match'}</strong>${st.tasks.map(t => {
-        const pct = t.error ? 100 : Math.round(Math.max(0, t.progress) * 100);
-        const right = t.error ? '<span class="badge bad">error</span>' : t.result ? `<span class="score">${t.result.result.home}-${t.result.result.away}</span>` : pct + '%';
-        return `<div class="job-row"><span>${esc(t.label)}</span><div class="bar"><span style="width:${pct}%"></span></div><span>${right}</span></div>${t.error ? `<div class="error">${esc(t.error)}</div>` : ''}`;
-      }).join('')}</div>`);
-      if (st.finished) {
-        activeJobs.delete(id);
-        loadLibrary();
-        if (st.kind === 'match' && st.tasks[0].result) openReplay(st.tasks[0].result);
-      }
-    }
-    $('#jobs').innerHTML = html.join('');
-    $('#jobs-card').hidden = !activeJobs.size;
-    await new Promise(r => setTimeout(r, 800));
-  }
-  $('#jobs-card').hidden = true;
-  polling = false;
-}
-
-let library = [];
 async function loadLibrary() {
-  const data = await api('/api/matches');
-  library = data.matches;
-  $('#csvs').innerHTML = data.csv.map(n => `<a class="btn small" href="/files/${encodeURIComponent(n)}">⬇ ${esc(n)}</a>`).join('');
+  const data = await backend.library();
+  library = data.matches; csvFiles = data.csv;
+  $('#csvs').innerHTML = csvFiles.map((c, i) => `<button class="btn small" data-csv="${i}">⬇ ${esc(c.name)}</button>`).join('');
   $('#library').innerHTML = library.map((m, i) => {
     const goals = m.result.goals.map(g => `${esc(g.minute)}' ${esc(g.scorer_name)}${g.own_goal ? ' (OG)' : ''}`).join(', ');
     const when = m.week ? `Week ${esc(m.week)}${m.date ? ' · ' + esc(m.date) : ''}` : new Date(m.created).toLocaleString();
@@ -277,39 +544,74 @@ async function loadLibrary() {
       </div>
       <div class="actions">
         <button class="btn small" data-watch="${i}">▶ Watch</button>
-        <a class="btn small" href="/files/${encodeURIComponent(m.file)}?format=json&download=1">JSON</a>
-        <a class="btn small" href="/files/${encodeURIComponent(m.file)}">.json.gz</a>
+        <button class="btn small" data-json="${i}">JSON</button>
+        <button class="btn small" data-gz="${i}">.json.gz</button>
         <button class="btn small danger" data-del="${i}" aria-label="Delete">✕</button>
       </div></div>`;
   }).join('') || '<p class="empty">No matches yet. Simulate one above.</p>';
 }
+$('#csvs').onclick = e => { const b = e.target.closest('[data-csv]'); if (b) backend.downloadCsv(csvFiles[+b.dataset.csv]); };
 $('#library').onclick = async e => {
-  const w = e.target.closest('[data-watch]'), d = e.target.closest('[data-del]');
-  if (w) openReplay(library[+w.dataset.watch]);
-  if (d && confirm('Delete this match file?')) { await api('/api/delete', { file: library[+d.dataset.del].file }); loadLibrary(); }
+  const t = e.target.closest('button');
+  if (!t) return;
+  if (t.dataset.watch) openReplay(library[+t.dataset.watch]);
+  if (t.dataset.json) backend.download(library[+t.dataset.json], 'json');
+  if (t.dataset.gz) backend.download(library[+t.dataset.gz], 'gz');
+  if (t.dataset.del && confirm('Delete this match?')) { await backend.remove(library[+t.dataset.del]); loadLibrary(); }
 };
+
+// Open a downloaded match file (.json or .json.gz) straight into the replay.
+$('#open-file').onchange = async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  try {
+    const text = f.name.endsWith('.gz') ? await gunzipText(f) : await f.text();
+    const data = JSON.parse(text);
+    if (data.format !== 'hcl-match') throw new Error('Not an HCL match file');
+    openReplay({ file: null, home: data.teams.home, away: data.teams.away }, data);
+  } catch (err) { alert("Couldn't open that file: " + err.message); }
+  e.target.value = '';
+};
+
+async function start() {
+  try {
+    const probe = await fetch('/api/league', { cache: 'no-store' });
+    backend = probe.ok && (probe.headers.get('content-type') || '').includes('json') ? ServerBackend : BrowserBackend;
+  } catch { backend = BrowserBackend; }
+  if (backend === BrowserBackend) $('#sheet-status').textContent = 'Loading the match engine (the first visit downloads about 10 MB)…';
+  loadLibrary().then(() => {
+    const qs = new URLSearchParams(location.search), w = qs.get('watch');
+    const m = w && library.find(x => x.file === w);
+    if (m) openReplay(m).then(() => { if (qs.get('t')) { T = +qs.get('t'); draw(); } });
+  }).catch(() => {});
+  try { league = await backend.init(); renderLeague(); }
+  catch (e) { $('#sheet-status').textContent = "Couldn't load the league: " + e.message; $('#sheet-dot').classList.add('warn'); }
+}
 
 /* ---------------- Replay ---------------- */
 const cv = $('#pitch'), ctx = cv.getContext('2d');
 const PAD = 30, SC = 10; // canvas px per metre
 let M = null, T = 0, T0 = 0, T1 = 0, playing = false, lastTs = 0, names = {}, shown = [];
 
-async function openReplay(summary) {
+let current = null;
+async function openReplay(summary, data) {
+  current = summary;
   $('#replay').classList.add('open');
   $('#rp-home').textContent = summary.home.name; $('#rp-away').textContent = summary.away.name;
   $('#rp-hc').style.background = summary.home.colour; $('#rp-ac').style.background = summary.away.colour;
-  $('#rp-dl-json').href = `/files/${encodeURIComponent(summary.file)}?format=json&download=1`;
-  $('#rp-dl-gz').href = `/files/${encodeURIComponent(summary.file)}`;
+  $('#rp-dl-json').hidden = $('#rp-dl-gz').hidden = !summary.file;
   $('#panel-events').innerHTML = '<p class="empty">Loading match…</p>';
-  M = await (await fetch(`/files/${encodeURIComponent(summary.file)}?format=json`)).json();
+  M = data || await backend.loadMatch(summary);
   names = Object.fromEntries(M.players.map(p => [p.id, p.name]));
   const d = M.frames.data;
-  T0 = d[0][0] / 10; T1 = d[d.length - 1][0] / 10; T = T0;
+  T0 = d[0][0] / 10; T1 = d[d.length - 1][0] / 10; T = T0; lastCur = -1;
   $('#rp-seek').min = T0; $('#rp-seek').max = T1;
   buildPanels();
   playing = false; $('#rp-play').textContent = 'Play';
   draw();
 }
+$('#rp-dl-json').onclick = () => current && current.file && backend.download(current, 'json');
+$('#rp-dl-gz').onclick = () => current && current.file && backend.download(current, 'gz');
 $('#rp-close').onclick = () => { $('#replay').classList.remove('open'); playing = false; };
 document.addEventListener('keydown', e => {
   if (!$('#replay').classList.contains('open')) return;
@@ -438,13 +740,7 @@ function loop(ts) {
 }
 requestAnimationFrame(loop);
 
-loadLeague().catch(e => { $('#sheet-status').textContent = 'Could not load the league: ' + e.message; $('#sheet-dot').classList.add('warn'); });
-loadLibrary().then(() => {
-  // ?watch=<file>&t=<seconds> opens a replay directly.
-  const qs = new URLSearchParams(location.search), w = qs.get('watch');
-  const m = w && library.find(x => x.file === w);
-  if (m) openReplay(m).then(() => { if (qs.get('t')) { T = +qs.get('t'); draw(); } });
-});
+start();
 </script>
 </body>
 </html>

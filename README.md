@@ -17,11 +17,17 @@ Python 3.10 or newer. No other packages.
 
 ## The simulator page
 
+**Online:** https://ldg224.github.io/S3_Simulator/ runs the whole simulator in your
+browser (the Python engine via Pyodide), so there's nothing to install. A match takes about
+1-2 minutes there, and matches are saved in that browser.
+
+**On your computer (faster, about 30 s a match, files saved to `matches/`):**
+
 ```
 python -m hcl_sim app
 ```
 
-Opens **http://localhost:8000** in your browser (it runs on this computer only). From there:
+That opens **http://localhost:8000**. Both use the same page (`index.html`). From there:
 
 * **Simulate a match:** pick home and away (and optionally a seed), click Simulate. About 30 seconds.
 * **Simulate a week:** pick a week from the Schedule tab; all its fixtures run in parallel,
