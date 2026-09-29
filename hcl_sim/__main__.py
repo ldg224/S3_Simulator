@@ -1,5 +1,6 @@
 """Command line:  python -m hcl_sim <command> ...
 
+  app                            open the simulator web page (simulate, watch, download)
   teams                          list teams and squads from the league sheet
   simulate HOME AWAY             simulate one match (codes like TUR, or full names)
   week N                         simulate every fixture in week N of the Schedule tab
@@ -94,6 +95,11 @@ def cmd_ratings_template(args):
     print(f'Wrote {len(league["players"])} players to {out}')
 
 
+def cmd_app(args):
+    from .web import serve
+    serve(port=args.port, offline=args.offline, open_browser=not args.no_browser)
+
+
 def cmd_calibrate(args):
     from .calibrate import run_calibration
     run_calibration(_league(args), args.matches, args.workers)
@@ -106,6 +112,11 @@ def main(argv=None):
     sub = ap.add_subparsers(dest='cmd', required=True)
 
     sub.add_parser('teams').set_defaults(fn=cmd_teams)
+
+    ap_app = sub.add_parser('app', help='open the simulator web page')
+    ap_app.add_argument('--port', type=int, default=8000)
+    ap_app.add_argument('--no-browser', action='store_true')
+    ap_app.set_defaults(fn=cmd_app)
 
     s = sub.add_parser('simulate')
     s.add_argument('home')

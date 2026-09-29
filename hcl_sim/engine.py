@@ -106,7 +106,8 @@ class Match:
 
     # ---------- main loop ----------
 
-    def run(self):
+    def run(self, on_progress=None):
+        """Play the match. `on_progress(fraction)` is called now and then with 0..1."""
         first_home_dir = self.rng.choice((1, -1))
         first_kick = self.rng.choice((self.home, self.away))
         for period in (1, 2):
@@ -116,6 +117,9 @@ class Match:
             self._start_period(period, kicker)
             while not self._period_over():
                 self._tick()
+                if on_progress and self.tick % 500 == 0:
+                    el = self.t - self.period_start
+                    on_progress(min(0.99, (period - 1) * 0.5 + 0.5 * el / (HALF_SECONDS + 180)))
             self._resolve_pass('end_of_period')
             self._record_frame(force=True)
             self.ev('period_end', team=None, x=self.ball.x, y=self.ball.y)

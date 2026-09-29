@@ -16,14 +16,14 @@ def match_seed(*parts):
     return int(hashlib.sha256('|'.join(str(p) for p in parts).encode()).hexdigest()[:8], 16)
 
 
-def simulate(league, home_code, away_code, seed=None, fps=5, info=None, include_frames=True):
+def simulate(league, home_code, away_code, seed=None, fps=5, info=None, include_frames=True, on_progress=None):
     home = teams.build_team(league, home_code)
     away = teams.build_team(league, away_code)
     if seed is None:
         seed = match_seed(home_code, away_code, time.time())
     info = dict(info or {})
     info.update({'home': home_code, 'away': away_code})
-    m = Match(home, away, seed=seed, fps=fps, info=info).run()
+    m = Match(home, away, seed=seed, fps=fps, info=info).run(on_progress=on_progress)
     return output.build(m, include_frames=include_frames)
 
 

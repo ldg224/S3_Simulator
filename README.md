@@ -15,7 +15,25 @@ the pitch. Every match file is checked for this automatically. See [docs/DESIGN.
 
 Python 3.10 or newer. No other packages.
 
-## Quick start
+## The simulator page
+
+```
+python -m hcl_sim app
+```
+
+Opens **http://localhost:8000** in your browser (it runs on this computer only). From there:
+
+* **Simulate a match:** pick home and away (and optionally a seed), click Simulate. About 30 seconds.
+* **Simulate a week:** pick a week from the Schedule tab; all its fixtures run in parallel,
+  and a results CSV in the sheet's Schedule & Results format appears for download.
+* **Match library:** every generated match, with **Watch** (a 2D replay with events, stats
+  and player ratings), **JSON** and **.json.gz** downloads.
+* **Refresh sheet** re-reads the Google Sheet after you change it.
+
+Files are saved in the `matches/` folder. Leave the terminal window open while you use the
+page; press Ctrl+C in it to stop.
+
+## Command line
 
 ```
 python -m hcl_sim teams                     # teams and squads from the sheet
